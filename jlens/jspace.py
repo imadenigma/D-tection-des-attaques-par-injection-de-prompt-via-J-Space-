@@ -17,9 +17,74 @@ Choosing k: atoms are added while each one explains more residual energy than
 a random direction would. A uniformly random unit direction captures
 ||r||^2 / d of the residual in expectation, which is the control used here.
 """
+import re
 from dataclasses import dataclass
 
 import torch
+
+
+def word_token_ids(tokenizer, min_len=3, leading_space=True):
+    """Ids of tokens that decode to a single alphabetic word with a leading space
+    (word-initial tokens such as ' bomb', ' Hack'; `leading_space=False` also keeps the
+    no-space variants). Used as the J-space dictionary: it keeps the readout
+    human-readable and makes batched decomposition ~4x cheaper on large vocabularies
+    (most of Qwen's 248k tokens are sub-words, punctuation or CJK)."""
+    pat = re.compile(rf"^{' ' if leading_space else ' ?'}[A-Za-z]{{{min_len},}}$")
+    strings = tokenizer.batch_decode([[i] for i in range(len(tokenizer))])
+    return [i for i, s in enumerate(strings) if pat.match(s)]
+
+
+@torch.no_grad()
+def batched_pursuit(H, D, k=25, inner_steps=3, adaptive=True, control_margin=1.0):
+    """Nonnegative gradient pursuit for many activations at once.
+
+    H: (N, d) activations; D: (M, d) dictionary of unit-norm atoms (J-lens vectors).
+    Greedily adds the atom most positively correlated with the residual, then runs a
+    few projected gradient steps (exact line search, coefficients kept >= 0) on the
+    selected support. With `adaptive`, a sample stops as soon as the new atom removes
+    less residual energy than a random unit direction would in expectation (||r||^2/d).
+
+    Returns (S, C, R): S (N, k) selected dictionary indices (-1 = unused), C (N, k)
+    nonnegative coefficients, R (N, d) residuals h - h_J.
+    """
+    H = H.float()
+    N, d = H.shape
+    S = torch.full((N, k), -1, dtype=torch.long, device=H.device)
+    C = torch.zeros(N, k, device=H.device)
+    R = H.clone()
+    active = torch.ones(N, dtype=torch.bool, device=H.device)
+    for it in range(k):
+        corr = R @ D.T
+        if it:
+            prev = S[:, :it]
+            corr.scatter_(1, prev.clamp_min(0), float("-inf"))
+        best, idx = corr.max(1)
+        newly = active & (best > 0)
+        S[:, it] = torch.where(newly, idx, torch.full_like(idx, -1))
+        sel = S[:, :it + 1]
+        A = D[sel.clamp_min(0)] * (sel >= 0).unsqueeze(-1).float()     # (N, s, d)
+        c = C[:, :it + 1].clone()
+        r = R
+        energy = (R * R).sum(1)
+        for _ in range(inner_steps):
+            g = torch.bmm(A, r.unsqueeze(-1)).squeeze(-1)               # -grad of 0.5||h - A^T c||^2
+            g = torch.where((c <= 0) & (g < 0), torch.zeros_like(g), g)
+            Ag = torch.bmm(A.transpose(1, 2), g.unsqueeze(-1)).squeeze(-1)
+            denom = (Ag * Ag).sum(1)
+            step = (g * g).sum(1) / denom.clamp_min(1e-12)
+            cap = torch.where(g < 0, c / (-g).clamp_min(1e-12), torch.full_like(c, float("inf"))).min(1).values
+            step = torch.where(denom > 0, torch.minimum(step, cap), torch.zeros_like(step))
+            c = (c + step.unsqueeze(-1) * g).clamp_min(0)
+            r = H - torch.bmm(A.transpose(1, 2), c.unsqueeze(-1)).squeeze(-1)
+        gain = energy - (r * r).sum(1)
+        accept = newly & ((gain >= control_margin * energy / d) if adaptive else torch.ones_like(newly))
+        C[:, :it + 1] = torch.where(accept.unsqueeze(-1), c, C[:, :it + 1])
+        R = torch.where(accept.unsqueeze(-1), r, R)
+        S[~accept, it] = -1
+        active = accept
+        if not active.any():
+            break
+    return S, C, R
 
 
 @dataclass

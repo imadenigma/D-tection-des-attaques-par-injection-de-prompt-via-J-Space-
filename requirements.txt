@@ -1,2 +1,8 @@
 torch>=2.2
-transformers>=4.44
+transformers>=5.0
+huggingface_hub
+datasets
+numpy
+scipy
+scikit-learn
+matplotlib

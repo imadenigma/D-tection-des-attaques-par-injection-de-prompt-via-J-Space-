@@ -1,0 +1,38 @@
+{
+  "model": "EleutherAI/pythia-70m-deduped",
+  "n_fit_prompts": 2,
+  "fit_seconds": 29.01194739341736,
+  "published_n_prompts": 1000,
+  "layers": {
+    "0": {
+      "cos_J_ours_vs_published": 0.6218786239624023,
+      "cos_I_vs_published": 0.1374346762895584,
+      "top10_overlap": 0.3005288635691007,
+      "top1_agreement": 0.4195528835058212
+    },
+    "1": {
+      "cos_J_ours_vs_published": 0.7393639087677002,
+      "cos_I_vs_published": 0.1945212185382843,
+      "top10_overlap": 0.23822238743305207,
+      "top1_agreement": 0.2588338315486908
+    },
+    "2": {
+      "cos_J_ours_vs_published": 0.8741475939750671,
+      "cos_I_vs_published": 0.3079371750354767,
+      "top10_overlap": 0.3295620585481326,
+      "top1_agreement": 0.3573573569456736
+    },
+    "3": {
+      "cos_J_ours_vs_published": 0.9281997680664062,
+      "cos_I_vs_published": 0.5163101553916931,
+      "top10_overlap": 0.29950200219949086,
+      "top1_agreement": 0.2573323309421539
+    },
+    "4": {
+      "cos_J_ours_vs_published": 0.9701530933380127,
+      "cos_I_vs_published": 0.676972508430481,
+      "top10_overlap": 0.48006089429060617,
+      "top1_agreement": 0.3805055061976115
+    }
+  }
+}
