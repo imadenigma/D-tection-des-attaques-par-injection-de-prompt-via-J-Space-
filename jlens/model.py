@@ -13,6 +13,8 @@ from contextlib import contextmanager
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+DEFAULT_MODEL = "Qwen/Qwen3.5-0.8B"
+
 _LAYER_PATHS = (
     "model.layers",
     "model.language_model.layers",
@@ -46,11 +48,11 @@ def _hidden(out):
 
 
 class ModelAdapter:
-    def __init__(self, model_name, device=None, dtype=torch.float32):
+    def __init__(self, model_name=DEFAULT_MODEL, device=None, dtype=torch.float32):
         self.name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype).to(self.device).eval()
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(self.device).eval()
         for p in self.model.parameters():
             p.requires_grad_(False)
 
@@ -74,6 +76,8 @@ class ModelAdapter:
         """Layer band where the paper locates the workspace (~L38-L92 on a 0-100 depth scale)."""
         return list(range(int(lo * self.n_layers), int(hi * self.n_layers), stride))
 
+    # ---- text ------------------------------------------------------------------------
+
     def tokenize(self, text, max_len=None):
         enc = self.tokenizer(text, return_tensors="pt", truncation=max_len is not None, max_length=max_len)
         return enc["input_ids"].to(self.device)
@@ -81,6 +85,18 @@ class ModelAdapter:
     def tokenize_with_offsets(self, text):
         enc = self.tokenizer(text, return_tensors="pt", return_offsets_mapping=True)
         return enc["input_ids"].to(self.device), enc["offset_mapping"][0].tolist()
+
+    def chat(self, user, system=None):
+        """Render a single-turn chat prompt ending where the assistant starts answering.
+        Thinking is disabled for chat templates that support it (Qwen3/3.5)."""
+        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+        try:
+            return self.tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True,
+                                                      enable_thinking=False)
+        except Exception:
+            if self.tokenizer.chat_template is None:
+                return (system + "\n\n" if system else "") + user + "\n"
+            raise
 
     def decode(self, token_id):
         return self.tokenizer.decode([int(token_id)])
@@ -91,6 +107,13 @@ class ModelAdapter:
         if not ids:
             raise ValueError(f"{word!r} tokenizes to nothing")
         return ids[0]
+
+    def single_token(self, word):
+        """Token id if `word` is exactly one token, else None."""
+        ids = self.tokenizer.encode(word, add_special_tokens=False)
+        return ids[0] if len(ids) == 1 else None
+
+    # ---- hooks -----------------------------------------------------------------------
 
     @contextmanager
     def capture(self, layer_ids, grad=False):
@@ -132,6 +155,13 @@ class ModelAdapter:
         with self.capture(layer_ids) as acts:
             self.model(input_ids)
         return {l: a.detach() for l, a in acts.items()}
+
+    @torch.no_grad()
+    def forward_with_activations(self, input_ids, layer_ids):
+        """One forward pass returning (final logits (seq, vocab), {layer: h_l (seq, d)})."""
+        with self.capture(layer_ids) as acts:
+            out = self.model(input_ids)
+        return out.logits[0], {l: a[0].detach() for l, a in acts.items()}
 
     @torch.no_grad()
     def generate(self, prompt, max_new_tokens=40, **kw):

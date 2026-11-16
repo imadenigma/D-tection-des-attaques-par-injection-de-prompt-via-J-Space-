@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+# large artefacts (models, lenses, extracted features) live outside the repo ($JSPACE_WORK)
+*.pt
+*.safetensors
+*.pkl
+# LaTeX build files
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.synctex.gz

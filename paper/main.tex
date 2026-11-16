@@ -1,0 +1,32 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\newcommand{\R}{\mathbb{R}}
+% reference to a table/figure produced by the experiment scripts (shows "pending" until they are run)
+\newcommand{\refor}[1]{\ifcsname r@#1\endcsname\ref{#1}\else\textit{(pending)}\fi}
+
+\title{Reading the Workspace: Detecting Malicious Prompts and Prompt Injections\\
+from the J-Space of an Open Language Model}
+\author{Pôle Projet IA \& ML --- subject proposed by Thales cortAIx\\
+\small Code and data: \url{https://github.com/imadenigma/D-tection-des-attaques-par-injection-de-prompt-via-J-Space-}}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\input{sections/abstract}
+\input{sections/body}
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+\end{document}

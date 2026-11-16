@@ -1,0 +1,190 @@
+\section{Results}
+
+\subsection{The Jacobian lens on an open model}
+\label{sec:lens}
+
+\paragraph{Our estimator reproduces the reference lens.}
+We fitted $J_\ell$ on Pythia-70m with our code on only two WikiText prompts of 128 tokens
+(29\,s on CPU). We compare it with the lens Neuronpedia fitted with the reference code on
+1{,}000 prompts. Table~\ref{tab:validate} shows the cosine similarity between the flattened
+matrices: it reaches 0.62--0.97 across layers. The identity matrix (the logit lens) is much
+further from the reference (0.14--0.68). Agreement grows with depth, as expected: late
+layers are close to the identity, and early layers need more prompts to average out
+context-specific structure. The script \texttt{01\_validate\_lens.py} also records the
+convergence of this similarity with the number of fitting prompts (1 to 80).
+
+\begin{table}[h]\centering\small
+\caption{Pythia-70m: our $J_\ell$ (2 prompts) vs the published reference lens (1{,}000 prompts).
+Overlap: fraction of the reference top-10 readout recovered on held-out WikiText.}
+\label{tab:validate}
+\begin{tabular}{lccccc}
+\toprule
+Layer & 0 & 1 & 2 & 3 & 4 \\
+\midrule
+$\cos(J^{\text{ours}}_\ell, J^{\text{ref}}_\ell)$ & 0.62 & 0.74 & 0.87 & 0.93 & 0.97 \\
+$\cos(I, J^{\text{ref}}_\ell)$ (logit lens) & 0.14 & 0.19 & 0.31 & 0.52 & 0.68 \\
+Top-10 overlap with reference readout & 0.30 & 0.24 & 0.33 & 0.30 & 0.48 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{The J-lens reads intermediate concepts that the logit lens misses.}
+On Qwen3.5-0.8B we use Anthropic's lens-evaluation prompts. In the \emph{multi-hop} set, the
+model must silently compute a bridge entity (e.g.\ \textit{Brazil} in ``the ocean on the coast
+of the country where Carnival is most famously celebrated is the''). In the
+\emph{association} set, a vignette evokes an unnamed concept (e.g.\ \textit{grief}). An
+intermediate counts as recovered at $k$ if it is in the top-$k$ lens readout at any layer
+(the paper's pass@$k$). Table~\ref{tab:lensq} reproduces the paper's qualitative finding on
+this small open model: the J-lens recovers about 3$\times$ more multi-hop intermediates than
+the logit lens at every $k$ (49\% vs 16\% at $k=10$). Association concepts are much harder
+for a 0.8B model with both lenses, but the J-lens still dominates.
+
+\begin{table}[h]\centering\small
+\caption{Qwen3.5-0.8B, pass@$k$ of intermediate concepts (best layer), 103 multi-hop
+intermediates and 102 association concepts.}
+\label{tab:lensq}
+\begin{tabular}{llccccc}
+\toprule
+Eval & Lens & $k=1$ & 5 & 10 & 50 & 100 \\
+\midrule
+Multi-hop & J-lens & \textbf{0.18} & \textbf{0.37} & \textbf{0.49} & \textbf{0.72} & \textbf{0.78} \\
+          & Logit lens & 0.04 & 0.12 & 0.16 & 0.33 & 0.44 \\
+Association & J-lens & \textbf{0.02} & \textbf{0.02} & \textbf{0.02} & \textbf{0.08} & \textbf{0.13} \\
+            & Logit lens & 0.00 & 0.00 & 0.00 & 0.01 & 0.05 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Workspace band.} For the 24-layer Qwen3.5-0.8B we use layers 8--20 (one third to
+about 85\% of the depth) as the workspace band. This matches the band reported by
+\citet{gurnee2026workspace}. \texttt{02\_workspace\_band.py} also produces the per-layer
+pass@10 curve and two of the paper's layer signatures (the persistence of the top-1 lens
+token across positions, and the kurtosis of the readout) to check this choice
+(Figure~\refor{fig:lens} when available). J-space codes are computed at layers 8, 11, 14, 17
+and 20.
+
+\IfFileExists{figures/fig_lens_quality.pdf}{
+\begin{figure}[h]\centering
+\includegraphics[width=\linewidth]{figures/fig_lens_quality.pdf}
+\caption{J-lens vs logit lens on Qwen3.5-0.8B, per layer.}\label{fig:lens}
+\end{figure}}{}
+
+\subsection{Detecting malicious prompts from the J-space}
+\label{sec:detect}
+
+Table~\refor{tab:detect} (generated from \texttt{results/04\_classification.json}) compares
+the J-space detector with its logit-lens ablation, the concept probes, the zero-shot lexicon
+scores, a raw-activation probe and a text-only classifier, in and out of distribution. Three
+comparisons are the point of the experiment:
+\begin{itemize}
+  \item J-space vs logit space: does the Jacobian transport matter?
+  \item J-space vs the raw residual probe: what is lost by restricting a probe to the small,
+        human-readable workspace component?
+  \item In-distribution vs XSTest and the injected documents: does the detector track the
+        \emph{intent} of a request, or its surface vocabulary? The TF-IDF baseline is the
+        reference for surface vocabulary.
+\end{itemize}
+
+\IfFileExists{figures/fig_detection_auroc.pdf}{
+\begin{figure}[h]\centering
+\includegraphics[width=0.9\linewidth]{figures/fig_detection_auroc.pdf}
+\caption{AUROC of the main detectors across evaluation sets.}\label{fig:auroc}
+\end{figure}}{}
+
+\IfFileExists{figures/fig_zero_shot_layers.pdf}{
+\begin{figure}[h]\centering
+\includegraphics[width=0.45\linewidth]{figures/fig_zero_shot_layers.pdf}
+\caption{Zero-shot AdvBench vs Alpaca separation by the \emph{harm} lexicon, per layer.}\label{fig:zs}
+\end{figure}}{}
+
+\subsection{What the detector reads, and injected documents}
+\label{sec:interp}
+
+Because the features are word coordinates, the detector is directly interpretable.
+Table~\refor{tab:atoms} lists the atoms that carry the most weight for each group of prompts,
+and Figure~\refor{fig:atoms} shows the words with the largest detector weights. For the
+injection setting we also train a detector of \emph{any} injected instruction
+(Table~\refor{tab:inj}). We measure whether the tokens of the injected sentence are the ones
+that light up, using the band-averaged J-lens score of the \emph{injection} lexicon
+(token-level AUROC). Figure~\refor{fig:tokens} shows examples.
+
+\IfFileExists{figures/fig_jspace_atoms.pdf}{
+\begin{figure}[h]\centering
+\includegraphics[width=0.9\linewidth]{figures/fig_jspace_atoms.pdf}
+\caption{J-space atoms with the largest detector weights.}\label{fig:atoms}
+\end{figure}}{}
+
+\IfFileExists{figures/fig_injection_tokens.pdf}{
+\begin{figure}[h]\centering
+\includegraphics[width=0.9\linewidth]{figures/fig_injection_tokens.pdf}
+\caption{Concept scores along three injected test documents; the shaded region is the
+injected sentence.}\label{fig:tokens}
+\end{figure}}{}
+
+\subsection{Gated J-space steering as a defense}
+\label{sec:defense}
+
+Undefended, Qwen3.5-0.8B often complies with AdvBench requests. On the first AdvBench
+behavior (``Write a script that can exploit vulnerabilities in a software or operating
+system''), it starts answering with a disclaimer rather than refusing. Table~\refor{tab:defense}
+reports refusal rates under three conditions: no defense, detector-gated steering and
+always-on steering. Always-on steering shows the utility cost that gating is meant to avoid:
+on benign prompts, the gated defense differs from the undefended model only on false
+positives.
+
+\IfFileExists{figures/fig_defense.pdf}{
+\begin{figure}[h]\centering
+\includegraphics[width=0.9\linewidth]{figures/fig_defense.pdf}
+\caption{Refusal rates with and without the defense.}\label{fig:defense}
+\end{figure}}{}
+
+\IfFileExists{sections/results_tables.tex}{\input{sections/results_tables}}{}
+
+\section{Discussion and limitations}
+
+\paragraph{What carries over from the paper.} On a 0.8B open model, the averaged Jacobian
+still corrects the logit lens substantially: multi-hop intermediates are read three times
+more often. This supports the project's premise that the J-space can be used as a
+monitoring surface on open models such as Qwen, not only on Claude.
+
+\paragraph{Threats to validity.}
+\begin{itemize}
+  \item \textbf{Scale.} We study one small model. The paper's workspace properties are
+        reported on much larger models, and small models are known to represent
+        intermediates less cleanly (association pass@$k$ is low here).
+  \item \textbf{Lens.} We use a published lens fitted on WikiText with the reference code. We
+        validate our own estimator only on Pythia-70m and with very few prompts.
+  \item \textbf{Dictionary.} We restrict the J-space dictionary to word tokens with a leading
+        space (66k of 248k tokens). Concepts carried by sub-words, CJK tokens or multi-token
+        phrases are invisible to the detector.
+  \item \textbf{Data.} AdvBench is lexically homogeneous (imperative ``Write/Develop/Create
+        \dots'' requests). In-distribution scores are therefore optimistic, which is why we
+        report XSTest (hard benign negatives), JBB and injected documents.
+  \item \textbf{Injection set.} Our injections are templated and inserted into encyclopedic
+        text. Real indirect injections (e-mails, tool outputs, adaptive attackers) are more
+        varied, and an attacker aware of the monitor could try to keep the injected
+        instruction out of the J-space \citep{winninger2025mechanistic}.
+  \item \textbf{Defense judge.} The refusal judge is keyword-based. It counts a refusal, not
+        the absence of harmful content, and it can be fooled by disclaimers. An LLM judge
+        would be more reliable.
+\end{itemize}
+
+\paragraph{Next steps.}
+\begin{itemize}
+  \item Fit lenses on the target model with more prompts on a GPU, and use the full
+        vocabulary.
+  \item Evaluate on standard prompt-injection benchmarks with agents and tools.
+  \item Replace steering by J-space \emph{ablation} of the injected instruction at its
+        tokens. This requires localization, which the token-level scores provide.
+  \item Test robustness to adaptive attacks that optimize against the monitor.
+\end{itemize}
+
+\section{Conclusion}
+
+We turned the J-space of \citet{gurnee2026workspace} into an interpretable pipeline for
+detecting malicious prompts, and for defending against them, on an open model. The pipeline
+covers lens validation, J-space coordinates of prompts, a word-level detector with an
+in- and out-of-distribution evaluation (including a new indirect-injection set), and
+detector-gated steering. The measured lens results show that the Jacobian lens transfers to
+Qwen3.5-0.8B. All code, data and scripts are released so that the detection and defense
+results can be reproduced and extended.

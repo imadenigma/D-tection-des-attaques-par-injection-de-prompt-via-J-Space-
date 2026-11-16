@@ -1,0 +1,24 @@
+\begin{abstract}
+Large language models can be manipulated by malicious requests and by instructions hidden in
+the data they read (prompt injection). \citet{gurnee2026workspace} showed that the internal
+\emph{J-space}, read with the Jacobian lens, behaves like a global workspace. In Claude, it
+contained the words \textit{fake} and \textit{injection} while the model read a
+prompt-injection attempt. We ask whether this signal can be used to detect and block attacks
+in an open-weights model, Qwen3.5-0.8B.
+\begin{itemize}
+  \item We re-implement the Jacobian lens and a batched nonnegative J-space decomposition.
+        Our estimator matches the reference lens on Pythia-70m (cosine 0.62--0.97 across
+        layers from only two fitting prompts, vs 0.14--0.68 for the logit lens). On Qwen, the
+        J-lens recovers three times more silent multi-hop intermediates than the logit lens
+        (pass@10 49\% vs 16\%).
+  \item We represent a prompt by its J-space coordinates: sparse nonnegative weights on the
+        J-lens vectors of 66k words. A logistic regression on these coordinates, trained on
+        AdvBench vs Alpaca, gives an interpretable detector whose features are words. We
+        evaluate it out of distribution on XSTest, JailbreakBench and a new set of 450
+        indirect-injection prompts, against logit-lens, raw-activation and text-only
+        baselines.
+  \item When the detector fires, refusal concepts are steered into the workspace layers
+        during generation.
+\end{itemize}
+All code, data and experiment scripts are released.
+\end{abstract}

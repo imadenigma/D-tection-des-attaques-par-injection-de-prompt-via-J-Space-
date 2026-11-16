@@ -1,0 +1,166 @@
+\section{Introduction}
+
+Prompt injection is one of the main weaknesses of applications built on large language
+models (LLMs). Malicious instructions, typed by a user or hidden in data the model reads
+(web pages, e-mails, tool outputs), make the model leave its intended task
+\citep{perez2022ignore,greshake2023indirect}. Most defenses look at the \emph{text}: input
+filters, safety classifiers such as Llama Guard \citep{inan2023llamaguard}, or prompt
+engineering. A complementary line of work looks \emph{inside} the model, for example with
+the refusal direction \citep{arditi2024refusal}, activation probes for task drift
+\citep{abdelnabi2024drift}, or interpretability-guided attacks \citep{winninger2025mechanistic}.
+
+\citet{gurnee2026workspace} recently identified, in Claude models, a small set of
+internal representations they call the \emph{J-space}. It plays the role of a global
+workspace \citep{baars1988cognitive}: what is in it can be reported, deliberately modulated,
+used in multi-step reasoning, and swapped to change downstream answers. The J-space is read
+with the \emph{Jacobian lens} (J-lens), which maps an internal activation to the words the
+model is disposed to say. In one auditing case study, the J-lens read the words
+\textit{fake} and \textit{injection} inside fabricated search results that the model
+silently recognized as a prompt injection.
+
+This project asks whether that observation can be turned into a working defense on an
+open-weights model. Concretely:
+\begin{enumerate}
+  \item we re-implement the J-lens and the J-space decomposition, check our Jacobian
+        estimator against the reference implementation, and verify on Qwen3.5-0.8B that the
+        J-lens reads intermediate concepts better than the logit lens (\S\ref{sec:lens});
+  \item we build a detector of malicious prompts on the J-space coordinates of the prompt,
+        trained on AdvBench \citep{zou2023universal} vs Alpaca \citep{alpaca}, and test it
+        without retraining on XSTest \citep{rottger2024xstest}, JailbreakBench
+        \citep{chao2024jailbreakbench} and a new set of indirect prompt injections
+        (\S\ref{sec:detect});
+  \item we inspect which words drive the detector, and whether injected sentences light up
+        token by token (\S\ref{sec:interp});
+  \item we use the same space to intervene: when the detector fires, refusal concepts are
+        added to the workspace layers during generation (\S\ref{sec:defense}).
+\end{enumerate}
+
+\section{Background: the Jacobian lens and the J-space}
+\label{sec:background}
+
+Let $h_{\ell,t}\in\R^{d}$ be the residual stream after block $\ell$ at position $t$, $W_U$
+the unembedding matrix and $\mathrm{norm}$ the final normalization. The logit lens
+\citep{nostalgebraist2020logitlens} reads an intermediate activation as if it were final,
+$\mathrm{softmax}(W_U\,\mathrm{norm}(h_\ell))$. It degrades in early and middle layers,
+whose basis differs from the output's. The tuned lens \citep{belrose2023tuned} learns a
+per-layer map trained to match the output distribution. The J-lens instead uses the average
+first-order causal effect of $h_\ell$ on the final layer:
+\begin{equation}
+  J_\ell = \mathbb{E}_{\text{prompt},\,t,\,t'\ge t}\!\left[\frac{\partial h_{L,t'}}{\partial h_{\ell,t}}\right],
+  \qquad
+  \mathrm{lens}(h_\ell) = \mathrm{softmax}\big(W_U\,\mathrm{norm}(J_\ell\,h_\ell)\big).
+\end{equation}
+The logit lens is the special case $J_\ell=I$. Averaging over prompts and over current
+\emph{and future} positions keeps what an activation is generally disposed to make the model
+say, now or later. The rows of $W_U J_\ell$ are the \emph{J-lens vectors}
+$v_{w,\ell}=J_\ell^\top W_U[w]$, one direction per vocabulary token $w$. Up to the
+normalization, the lens logit of $w$ is $\langle v_{w,\ell},h_\ell\rangle$.
+
+There are far more tokens than dimensions, so the J-lens vectors are overcomplete. The
+\emph{J-space} is the set of activations that are sparse \emph{nonnegative} combinations of
+at most $k$ of them (a union of cones, $k\lesssim 25$ in the paper). The J-space component of
+an activation is its best such approximation, found by gradient pursuit
+\citep{blumensath2008gradient}. Its coefficients are the activation's \emph{J-space
+coordinates}: the words currently ``in the workspace''. \citet{gurnee2026workspace} find that
+this component carries less than 10\% of the activation variance, but that it is causally
+used for report and flexible reasoning. It is coherent only in a middle band of layers,
+between ``sensory'' early layers and ``motor'' late layers.
+
+\section{Method}
+\label{sec:method}
+
+\paragraph{Model and lens.} We study Qwen3.5-0.8B \citep{qwen35}, a post-trained 24-layer
+model ($d=1024$, vocabulary of 248k tokens) with hybrid linear/full attention. Fitting a lens
+costs $\lceil d/b\rceil$ backward passes per prompt, which is too slow on our CPU-only
+machine for this model. We therefore use the lens that Neuronpedia fitted on WikiText with
+Anthropic's reference code \citep{neuronpedialenses,jlensrepo}, and validate our own
+estimator on a smaller model (\S\ref{sec:lens}). Our estimator follows the reference
+reduction exactly. One forward pass on the prompt replicated $b$ times keeps its graph. Copy
+$i$ receives a one-hot cotangent on output dimension $i$ at every valid target position, so
+one backward pass yields $\sum_{t'\ge t}\partial h_{L,t'}[i]/\partial h_{\ell,t}$ for every
+source position and every layer at once. This is averaged over valid source positions
+(excluding the first 16 attention-sink tokens and the last token), then over prompts.
+
+\paragraph{Positions.} A prompt is rendered with the chat template. We distinguish the
+\emph{span}, i.e.\ the content to inspect (the user message, or only the untrusted document
+in the injection setting), and the \emph{tail}, i.e.\ the template tokens after it
+(\texttt{<|im\_end|>} \dots\ \texttt{assistant}), where the model has read the request and
+prepares its answer. Activations are centered by the layer's mean residual on WikiText
+(task-agnostic, so zero-shot scores stay zero-shot).
+
+\paragraph{J-space coordinates of a prompt.} At each \emph{code layer} (5 layers spread
+over the workspace band, \S\ref{sec:lens}) we pool three vectors: the mean over the span,
+the mean over the tail and the last token. We decompose each by nonnegative gradient pursuit
+over a dictionary of unit-normalized J-lens vectors. A sample stops when the next atom
+removes less residual energy than a random unit direction would in expectation
+($\|r\|^2/d$), with at most $k=16$ atoms. For speed and readability, the dictionary is
+restricted to the 66{,}032 tokens that decode to an alphabetic word with a leading space
+(e.g.\ \textit{\ bomb}). We batch the pursuit across prompts so that each dictionary matrix
+is read once per step for the whole batch. Summing coefficients over code layers gives one
+sparse vector per prompt, indexed by (pool, word).
+
+\paragraph{Detectors.}
+\begin{itemize}
+  \item \textbf{J-space codes + LR (ours).} A logistic regression on the sparse J-space
+        coordinates. Its weights are words, so each decision can be explained by its atoms.
+  \item \textbf{J-lens concept probe + LR.} Cosine similarities between the centered
+        activations and the J-lens vectors of 92 concept words. The words come from three
+        hand-written lexicons (\emph{harm}, \emph{refusal}, \emph{injection}) plus a control
+        lexicon of 25 random words. Features are taken at every workspace layer and pooled
+        as max/mean over the span and mean over the tail.
+  \item \textbf{Zero-shot lexicon score} (no training). The maximum over span and tail
+        tokens of the band-averaged mean cosine with a lexicon's J-lens vectors.
+  \item \textbf{Ablations.} The same three detectors with $J_\ell=I$, i.e.\ logit-lens
+        vectors $W_U[w]$ (``logit space'').
+  \item \textbf{Baselines.} (i) a logistic regression on the raw residual stream (mean span
+        and last token) at the single best layer chosen on validation data, a strong
+        white-box probe in the spirit of \citet{arditi2024refusal} and
+        \citet{abdelnabi2024drift}; (ii) TF-IDF (1--2-grams) + logistic regression on the
+        prompt text.
+\end{itemize}
+Regularization is chosen on the validation split. The decision threshold is set for a 5\%
+false-positive rate on validation benign prompts and then frozen for all test sets.
+
+\paragraph{Defense: detector-gated J-space steering.} When the detector flags a prompt, we
+generate with a steering vector added at the workspace layers and at every position:
+$h_\ell \leftarrow h_\ell + \alpha\,\overline{\|h_\ell\|}\,u_\ell$. Here $u_\ell$ is the
+normalized sum of the unit J-lens vectors of six refusal words (\textit{sorry, cannot,
+refuse, unable, apologize, inappropriate}). This is the paper's thought-injection protocol,
+applied to refusal concepts \citep{gurnee2026workspace,turner2023steering}. Unflagged prompts
+are generated unchanged. The strength $\alpha$ is the smallest value that yields $\ge 90\%$
+refusals on harmful \emph{validation} prompts.
+
+\section{Experimental setup}
+\label{sec:setup}
+
+\paragraph{Data.}
+\begin{itemize}
+  \item \textbf{Main task.} The 520 AdvBench harmful behaviors \citep{zou2023universal} vs
+        520 Alpaca instructions without input \citep{alpaca}, split 60/20/20 (train/val/test),
+        stratified.
+  \item \textbf{Out of distribution} (never used for training or tuning):
+    \begin{itemize}
+      \item XSTest: 250 safe prompts built to \emph{look} unsafe (homonyms such as ``kill a
+            Python process'', fiction, history\dots) and 200 unsafe contrasts
+            \citep{rottger2024xstest};
+      \item JailbreakBench JBB-Behaviors: 100 harmful and 100 topic-matched benign behaviors
+            \citep{chao2024jailbreakbench};
+      \item an \textbf{indirect prompt injection} set built for this project. 150 WikiText
+            paragraphs \citep{merity2016pointer} are wrapped in a benign task (``Summarize
+            the following document\dots''), each in three variants:
+            \begin{itemize}
+              \item \emph{clean};
+              \item \emph{inj\_harm}: an AdvBench goal inserted at a random sentence boundary
+                    with one of five injection templates (``IMPORTANT: Ignore all previous
+                    instructions. Instead, \dots'', ``SYSTEM OVERRIDE: \dots'', \dots);
+              \item \emph{inj\_benign}: an Alpaca instruction injected the same way.
+            \end{itemize}
+            Injected goals come only from the \emph{test} split of the main task. In this
+            setting, detectors only read the document tokens and the tail.
+    \end{itemize}
+\end{itemize}
+
+\paragraph{Metrics.} We report AUROC, and the true- and false-positive rates (TPR, FPR) at
+the frozen threshold. For the defense, we use a prefix/keyword refusal judge in the style of
+the AdvBench evaluation \citep{zou2023universal}, on 32 greedily decoded tokens. All
+experiments run on 4 CPU cores. The scripts in \texttt{experiments/} reproduce every number.
